@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { requireOwner } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { getCurrentMonthYear } from '../lib/payments'
+import { syncStripeQuantity } from '../lib/stripe'
 
 const router = Router()
 router.use(requireOwner)
@@ -122,6 +123,8 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     return
   }
 
+  syncStripeQuantity(req.ownerId!).catch(err => console.error('[Stripe] syncQuantity error:', err))
+
   res.status(201).json(property)
 })
 
@@ -168,6 +171,8 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     res.status(404).json({ error: 'Property not found', code: 404 })
     return
   }
+
+  syncStripeQuantity(req.ownerId!).catch(err => console.error('[Stripe] syncQuantity error:', err))
 
   res.json({ success: true, id: data.id })
 })

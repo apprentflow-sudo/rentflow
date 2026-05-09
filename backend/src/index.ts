@@ -17,6 +17,7 @@ import authRoutes from './routes/auth'
 import propertiesRoutes from './routes/properties'
 import tenantsRoutes from './routes/tenants'
 import paymentsRoutes from './routes/payments'
+import billingRoutes from './routes/billing'
 
 const app = express()
 
@@ -42,6 +43,9 @@ const limiter = rateLimit({
 })
 app.use(limiter)
 
+// Raw body required for Stripe webhook signature verification — must be before express.json()
+app.use('/api/billing/webhook', express.raw({ type: 'application/json' }))
+
 app.use(express.json())
 
 app.get('/health', (_req: Request, res: Response) => {
@@ -52,6 +56,7 @@ app.use('/api/auth', authRoutes)
 app.use('/api/properties', propertiesRoutes)
 app.use('/api/tenants', tenantsRoutes)
 app.use('/api/payments', paymentsRoutes)
+app.use('/api/billing', billingRoutes)
 
 // Global error handler
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
