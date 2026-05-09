@@ -1,0 +1,136 @@
+# RentFlow API — Test file
+# Use with VSCode REST Client extension or copy to Postman
+# Run requests in order: create property → create tenant → test payments
+
+@base = http://localhost:4000
+@owner_token = PASTE_SUPABASE_SESSION_TOKEN_HERE
+@tenant_token = PASTE_TENANT_JWT_HERE
+
+###
+# HEALTH CHECK
+GET {{base}}/health
+
+###
+# ── PROPERTIES ──────────────────────────────────────────────
+
+# List all properties
+GET {{base}}/api/properties
+Authorization: Bearer {{owner_token}}
+
+###
+# Create a property
+POST {{base}}/api/properties
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+
+{
+  "address": "Carrer de Mallorca 123",
+  "city": "Barcelona",
+  "postal_code": "08036",
+  "country": "ES",
+  "monthly_rent": 1100,
+  "currency": "EUR",
+  "due_day": 1
+}
+
+###
+# Update a property (replace :id)
+PATCH {{base}}/api/properties/:id
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+
+{
+  "monthly_rent": 1150,
+  "notes": "Updated rent"
+}
+
+###
+# ── TENANTS ─────────────────────────────────────────────────
+
+# List all tenants
+GET {{base}}/api/tenants
+Authorization: Bearer {{owner_token}}
+
+###
+# Create a tenant (replace property_id with real UUID from above)
+POST {{base}}/api/tenants
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+
+{
+  "full_name": "Ana Martínez",
+  "id_document": "12345678",
+  "email": "ana.martinez@email.com",
+  "phone_whatsapp": "+34600000001",
+  "property_id": "PROPERTY_UUID_HERE",
+  "preferred_language": "es",
+  "lease_start": "2025-01-01",
+  "lease_end": "2026-01-01"
+}
+
+###
+# Get tenant detail (replace :id)
+GET {{base}}/api/tenants/:id
+Authorization: Bearer {{owner_token}}
+
+###
+# ── TENANT AUTH ──────────────────────────────────────────────
+
+# Authenticate as tenant (returns JWT for subsequent tenant requests)
+POST {{base}}/api/auth/tenant
+Content-Type: application/json
+
+{
+  "id_document": "12345678"
+}
+
+###
+# ── PAYMENTS ─────────────────────────────────────────────────
+
+# Dashboard — current month summary
+GET {{base}}/api/payments/dashboard
+Authorization: Bearer {{owner_token}}
+
+###
+# List payments (optional filters: month, year, status, property_id, tenant_id)
+GET {{base}}/api/payments?month=5&year=2026
+Authorization: Bearer {{owner_token}}
+
+###
+# Get single payment detail (replace :id)
+GET {{base}}/api/payments/:id
+Authorization: Bearer {{owner_token}}
+
+###
+# Owner approves a payment (replace :id with a payment in to_verify status)
+PATCH {{base}}/api/payments/:id/verify
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+
+{
+  "action": "approve",
+  "note": "Transferencia verificada manualmente"
+}
+
+###
+# Owner rejects a payment
+PATCH {{base}}/api/payments/:id/verify
+Authorization: Bearer {{owner_token}}
+Content-Type: application/json
+
+{
+  "action": "reject",
+  "note": "El monto no coincide con el alquiler"
+}
+
+###
+# Tenant — view current payment (replace :tenant_id, use tenant JWT)
+GET {{base}}/api/payments/tenant/:tenant_id
+Authorization: Bearer {{tenant_token}}
+
+###
+# NOTE: Receipt upload (POST /api/payments/:id/receipt) requires multipart/form-data
+# Use Postman or curl:
+# curl -X POST http://localhost:4000/api/payments/:id/receipt \
+#   -H "Authorization: Bearer TENANT_JWT" \
+#   -F "receipt=@/path/to/receipt.jpg"
