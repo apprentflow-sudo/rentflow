@@ -27,6 +27,7 @@ interface AuthContextType {
   tenantId: string | null
   isOwnerLoading: boolean
   signInOwner: (email: string, password: string) => Promise<void>
+  signUpOwner: (name: string, email: string, password: string) => Promise<void>
   signOutOwner: () => Promise<void>
   signInTenant: (idDocument: string) => Promise<string>
   signOutTenant: () => void
@@ -77,6 +78,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('owner_token', data.session.access_token)
   }
 
+  const signUpOwner = async (name: string, email: string, password: string) => {
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { full_name: name },
+        emailRedirectTo: `${window.location.origin}/admin`,
+      },
+    })
+    if (error) throw new Error(error.message)
+  }
+
   const signOutOwner = async () => {
     await supabase.auth.signOut()
     localStorage.removeItem('owner_token')
@@ -98,7 +111,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ ownerToken, tenantId, isOwnerLoading, signInOwner, signOutOwner, signInTenant, signOutTenant }}>
+    <AuthContext.Provider value={{ ownerToken, tenantId, isOwnerLoading, signInOwner, signUpOwner, signOutOwner, signInTenant, signOutTenant }}>
       {children}
     </AuthContext.Provider>
   )

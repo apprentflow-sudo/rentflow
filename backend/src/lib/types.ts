@@ -17,9 +17,11 @@ export interface Property {
   address: string
   city: string
   postal_code?: string
+  door_number?: string
   country: string
   monthly_rent: number
   currency: string
+  common_expenses: number
   due_day: number
   notes?: string
   is_active: boolean
@@ -38,6 +40,8 @@ export interface Tenant {
   preferred_language: string
   lease_start: string
   lease_end?: string
+  rent_override?: number
+  common_expenses_override?: number
   contract_url?: string
   is_active: boolean
   notes?: string
@@ -69,6 +73,8 @@ export interface Payment {
   period_year: number
   amount_expected: number
   amount_received?: number
+  common_expenses_expected: number
+  common_expenses_received?: number
   due_date: string
   paid_date?: string
   status: PaymentStatus

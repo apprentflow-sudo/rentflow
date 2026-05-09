@@ -139,10 +139,12 @@ function getStatusBadge(status: string) {
 // ── Expanded tenant row ────────────────────────────────────────────────────
 
 function TenantDetail({ tenantId, historyMonths }: { tenantId: string; historyMonths: number }) {
+  const allHistory = historyMonths === 0
   const { data, isLoading } = useQuery<TenantDetail>({
-    queryKey: ['tenant', tenantId],
+    queryKey: ['tenant', tenantId, allHistory ? 'all' : historyMonths],
     queryFn: async () => {
-      const res = await api.get(`/api/tenants/${tenantId}`)
+      const url = allHistory ? `/api/tenants/${tenantId}?history=all` : `/api/tenants/${tenantId}`
+      const res = await api.get(url)
       return res.data
     },
     staleTime: 5 * 60_000
@@ -154,7 +156,7 @@ function TenantDetail({ tenantId, historyMonths }: { tenantId: string; historyMo
 
   if (!data) return null
 
-  const history = data.payment_history.slice(0, historyMonths)
+  const history = allHistory ? data.payment_history : data.payment_history.slice(0, historyMonths)
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -241,11 +243,22 @@ export default function LandlordDashboard() {
   const [propertyMode, setPropertyMode] = useState<'existing' | 'new'>('existing')
   const [selectedPropertyId, setSelectedPropertyId] = useState('')
   const [tenantForm, setTenantForm] = useState({
-    full_name: '', id_document: '', email: '', phone_whatsapp: '', lease_start: '', lease_end: ''
+    full_name: '', id_document: '', email: '', phone_whatsapp: '', lease_start: '', lease_end: '', indefinite: false
   })
   const [newPropertyForm, setNewPropertyForm] = useState({
-    address: '', city: '', monthly_rent: '', due_day: '1'
+    address: '', city: '', door_number: '', postal_code: '', monthly_rent: '', common_expenses: '0', currency: 'EUR', due_day: '1'
   })
+  const [existingRentOverride, setExistingRentOverride] = useState('')
+  const [existingCommonOverride, setExistingCommonOverride] = useState('')
+
+  // Backfill modal state (shown after creating a tenant with a past lease_start)
+  const [backfillTenantId, setBackfillTenantId] = useState<string | null>(null)
+  const [backfillMonths, setBackfillMonths] = useState<Array<{
+    period_month: number; period_year: number; label: string
+    status: 'paid' | 'pending' | 'overdue'; paid_date: string; receipt_file: File | null
+  }>>([])
+  const [isBackfillOpen, setIsBackfillOpen] = useState(false)
+  const [backfillLoading, setBackfillLoading] = useState(false)
 
   const { signOutOwner } = useAuth()
   const navigate = useNavigate()
@@ -294,8 +307,10 @@ export default function LandlordDashboard() {
   })
 
   const resetAddTenantForm = () => {
-    setTenantForm({ full_name: '', id_document: '', email: '', phone_whatsapp: '', lease_start: '', lease_end: '' })
-    setNewPropertyForm({ address: '', city: '', monthly_rent: '', due_day: '1' })
+    setTenantForm({ full_name: '', id_document: '', email: '', phone_whatsapp: '', lease_start: '', lease_end: '', indefinite: false })
+    setNewPropertyForm({ address: '', city: '', door_number: '', postal_code: '', monthly_rent: '', common_expenses: '0', currency: 'EUR', due_day: '1' })
+    setExistingRentOverride('')
+    setExistingCommonOverride('')
     setPropertyMode('existing')
     setSelectedPropertyId('')
   }
@@ -305,13 +320,17 @@ export default function LandlordDashboard() {
       let propertyId = selectedPropertyId
 
       if (propertyMode === 'new') {
-        if (!newPropertyForm.address.trim() || !newPropertyForm.city.trim() || !newPropertyForm.monthly_rent) {
-          throw new Error('Dirección, ciudad y alquiler mensual son obligatorios')
+        if (!newPropertyForm.address.trim() || !newPropertyForm.city.trim() || !newPropertyForm.monthly_rent || !newPropertyForm.door_number.trim()) {
+          throw new Error('Dirección, ciudad, número de puerta y alquiler mensual son obligatorios')
         }
         const propRes = await api.post('/api/properties', {
           address: newPropertyForm.address.trim(),
           city: newPropertyForm.city.trim(),
+          door_number: newPropertyForm.door_number.trim(),
+          postal_code: newPropertyForm.postal_code.trim() || undefined,
           monthly_rent: Number(newPropertyForm.monthly_rent),
+          common_expenses: Number(newPropertyForm.common_expenses) || 0,
+          currency: newPropertyForm.currency,
           due_day: Number(newPropertyForm.due_day) || 1,
         })
         propertyId = propRes.data.id
@@ -319,22 +338,49 @@ export default function LandlordDashboard() {
 
       if (!propertyId) throw new Error('Selecciona o crea una propiedad')
 
-      await api.post('/api/tenants', {
+      const res = await api.post('/api/tenants', {
         full_name: tenantForm.full_name.trim(),
         id_document: tenantForm.id_document.trim(),
         email: tenantForm.email.trim() || undefined,
         phone_whatsapp: tenantForm.phone_whatsapp.trim() || undefined,
         lease_start: tenantForm.lease_start,
-        lease_end: tenantForm.lease_end || undefined,
+        lease_end: tenantForm.indefinite ? undefined : (tenantForm.lease_end || undefined),
         property_id: propertyId,
+        rent_override: existingRentOverride ? Number(existingRentOverride) : undefined,
+        common_expenses_override: existingCommonOverride ? Number(existingCommonOverride) : undefined,
       })
+      return { tenantId: res.data.id, leaseStart: tenantForm.lease_start }
     },
-    onSuccess: () => {
+    onSuccess: ({ tenantId, leaseStart }) => {
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       queryClient.invalidateQueries({ queryKey: ['properties'] })
-      toast.success('Inquilino añadido. El pago de este mes se ha generado automáticamente.')
       setIsAddTenantOpen(false)
       resetAddTenantForm()
+
+      // Check if contract started in a past month → offer backfill
+      const start = new Date(leaseStart)
+      const now = new Date()
+      const firstOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+      if (start < firstOfThisMonth) {
+        const months: typeof backfillMonths = []
+        const cursor = new Date(start.getFullYear(), start.getMonth(), 1)
+        while (cursor < firstOfThisMonth) {
+          months.push({
+            period_month: cursor.getMonth() + 1,
+            period_year: cursor.getFullYear(),
+            label: cursor.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
+            status: 'pending',
+            paid_date: '',
+            receipt_file: null,
+          })
+          cursor.setMonth(cursor.getMonth() + 1)
+        }
+        setBackfillTenantId(tenantId)
+        setBackfillMonths(months)
+        setIsBackfillOpen(true)
+      } else {
+        toast.success('Inquilino añadido. El pago de este mes se ha generado automáticamente.')
+      }
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error
@@ -343,6 +389,51 @@ export default function LandlordDashboard() {
       toast.error(msg)
     }
   })
+
+  const handleBackfillSubmit = async () => {
+    if (!backfillTenantId) return
+    setBackfillLoading(true)
+    try {
+      // Upload any receipt files first
+      const monthsWithUrls = await Promise.all(backfillMonths.map(async (m) => {
+        if (m.receipt_file && m.status === 'paid') {
+          const formData = new FormData()
+          formData.append('receipt', m.receipt_file)
+          // Upload to comprobantes bucket via payment receipt endpoint — use a placeholder payment id for now
+          // We send the file directly and get back a URL
+          try {
+            const uploadRes = await api.post(`/api/tenants/${backfillTenantId}/backfill-receipt`, formData, {
+              headers: { 'Content-Type': 'multipart/form-data' }
+            })
+            return { ...m, receipt_url: uploadRes.data.url }
+          } catch {
+            return { ...m, receipt_url: undefined }
+          }
+        }
+        return { ...m, receipt_url: undefined }
+      }))
+
+      await api.post(`/api/tenants/${backfillTenantId}/backfill`, {
+        months: monthsWithUrls.map(m => ({
+          period_month: m.period_month,
+          period_year: m.period_year,
+          status: m.status,
+          paid_date: m.paid_date || undefined,
+          receipt_url: m.receipt_url,
+        }))
+      })
+
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      toast.success('Inquilino añadido con historial registrado.')
+    } catch {
+      toast.error('Error al registrar meses anteriores. Puedes intentarlo más tarde.')
+    } finally {
+      setBackfillLoading(false)
+      setIsBackfillOpen(false)
+      setBackfillTenantId(null)
+      setBackfillMonths([])
+    }
+  }
 
   // ── Computed ──────────────────────────────────────────────────────────────
 
@@ -576,6 +667,7 @@ export default function LandlordDashboard() {
                                     <option value={3}>Últimos 3 meses</option>
                                     <option value={6}>Últimos 6 meses</option>
                                     <option value={12}>Últimos 12 meses</option>
+                                    <option value={0}>Contrato entero</option>
                                   </select>
                                 </div>
 
@@ -670,8 +762,19 @@ export default function LandlordDashboard() {
                     type="date"
                     value={tenantForm.lease_end}
                     onChange={e => setTenantForm(f => ({ ...f, lease_end: e.target.value }))}
-                    className="bg-white border-slate-200 rounded-lg text-sm h-9"
+                    disabled={tenantForm.indefinite}
+                    className="bg-white border-slate-200 rounded-lg text-sm h-9 disabled:opacity-40"
                   />
+                </div>
+                <div className="col-span-2 flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="indefinite"
+                    checked={tenantForm.indefinite}
+                    onChange={e => setTenantForm(f => ({ ...f, indefinite: e.target.checked, lease_end: e.target.checked ? '' : f.lease_end }))}
+                    className="w-4 h-4 accent-indigo-600"
+                  />
+                  <label htmlFor="indefinite" className="text-xs font-semibold text-slate-600 cursor-pointer">Contrato indefinido</label>
                 </div>
               </div>
             </div>
@@ -712,31 +815,64 @@ export default function LandlordDashboard() {
                     No tienes propiedades todavía. Crea una nueva.
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    {propertiesList.map(p => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => setSelectedPropertyId(p.id)}
-                        className={`w-full flex items-center justify-between p-3 rounded-xl border text-left transition-colors ${
-                          selectedPropertyId === p.id
-                            ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300'
-                            : 'border-slate-200 bg-white hover:border-slate-300'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <Building2 className={`w-4 h-4 ${selectedPropertyId === p.id ? 'text-indigo-600' : 'text-slate-400'}`} />
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      {propertiesList.map(p => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedPropertyId(p.id)
+                            setExistingRentOverride(String(p.monthly_rent))
+                            setExistingCommonOverride('0')
+                          }}
+                          className={`w-full flex items-center justify-between p-3 rounded-xl border text-left transition-colors ${
+                            selectedPropertyId === p.id
+                              ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <Building2 className={`w-4 h-4 ${selectedPropertyId === p.id ? 'text-indigo-600' : 'text-slate-400'}`} />
+                            <div>
+                              <p className="text-sm font-semibold text-slate-800">{p.address}</p>
+                              <p className="text-xs text-slate-500">{p.city}</p>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-sm font-bold text-indigo-700">€{Number(p.monthly_rent).toLocaleString('es-ES')}</p>
+                            <p className="text-[10px] text-slate-400">Día {p.due_day}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    {selectedPropertyId && (
+                      <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-2">
+                        <p className="text-[10px] font-bold uppercase text-slate-400 mb-2">Ajustar para este inquilino</p>
+                        <div className="grid grid-cols-2 gap-3">
                           <div>
-                            <p className="text-sm font-semibold text-slate-800">{p.address}</p>
-                            <p className="text-xs text-slate-500">{p.city}</p>
+                            <label className="block text-xs font-semibold text-slate-600 mb-1">Renta mensual</label>
+                            <Input
+                              type="number"
+                              value={existingRentOverride}
+                              onChange={e => setExistingRentOverride(e.target.value)}
+                              className="bg-slate-50 border-slate-200 rounded-lg text-sm h-9"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-600 mb-1">Gastos comunes</label>
+                            <Input
+                              type="number"
+                              value={existingCommonOverride}
+                              onChange={e => setExistingCommonOverride(e.target.value)}
+                              placeholder="0"
+                              className="bg-slate-50 border-slate-200 rounded-lg text-sm h-9"
+                            />
                           </div>
                         </div>
-                        <div className="text-right shrink-0">
-                          <p className="text-sm font-bold text-indigo-700">€{Number(p.monthly_rent).toLocaleString('es-ES')}</p>
-                          <p className="text-[10px] text-slate-400">Día {p.due_day}</p>
-                        </div>
-                      </button>
-                    ))}
+                        <p className="text-[10px] text-slate-400">Solo afecta a este inquilino. La propiedad no se modifica.</p>
+                      </div>
+                    )}
                   </div>
                 )
               ) : (
@@ -746,7 +882,16 @@ export default function LandlordDashboard() {
                     <Input
                       value={newPropertyForm.address}
                       onChange={e => setNewPropertyForm(f => ({ ...f, address: e.target.value }))}
-                      placeholder="Calle Mayor 12, 3ºB"
+                      placeholder="Calle Mayor 12"
+                      className="bg-white border-slate-200 rounded-lg text-sm h-9"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Número de puerta *</label>
+                    <Input
+                      value={newPropertyForm.door_number}
+                      onChange={e => setNewPropertyForm(f => ({ ...f, door_number: e.target.value }))}
+                      placeholder="3ºB, Puerta 5"
                       className="bg-white border-slate-200 rounded-lg text-sm h-9"
                     />
                   </div>
@@ -760,13 +905,47 @@ export default function LandlordDashboard() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1">Alquiler mensual (€) *</label>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Código postal</label>
+                    <Input
+                      value={newPropertyForm.postal_code}
+                      onChange={e => setNewPropertyForm(f => ({ ...f, postal_code: e.target.value }))}
+                      placeholder="28001"
+                      className="bg-white border-slate-200 rounded-lg text-sm h-9"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Moneda</label>
+                    <select
+                      value={newPropertyForm.currency}
+                      onChange={e => setNewPropertyForm(f => ({ ...f, currency: e.target.value }))}
+                      className="w-full bg-white border border-slate-200 rounded-lg text-sm h-9 px-2 outline-none focus:ring-1 focus:ring-indigo-400"
+                    >
+                      <option value="EUR">EUR €</option>
+                      <option value="USD">USD $</option>
+                      <option value="UYU">UYU $U</option>
+                      <option value="PYG">PYG ₲</option>
+                      <option value="GBP">GBP £</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Alquiler mensual *</label>
                     <Input
                       type="number"
                       value={newPropertyForm.monthly_rent}
                       onChange={e => setNewPropertyForm(f => ({ ...f, monthly_rent: e.target.value }))}
                       placeholder="1200"
                       min="1"
+                      className="bg-white border-slate-200 rounded-lg text-sm h-9"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Gastos comunes</label>
+                    <Input
+                      type="number"
+                      value={newPropertyForm.common_expenses}
+                      onChange={e => setNewPropertyForm(f => ({ ...f, common_expenses: e.target.value }))}
+                      placeholder="0"
+                      min="0"
                       className="bg-white border-slate-200 rounded-lg text-sm h-9"
                     />
                   </div>
@@ -803,7 +982,7 @@ export default function LandlordDashboard() {
                 !tenantForm.id_document.trim() ||
                 !tenantForm.lease_start ||
                 (propertyMode === 'existing' && !selectedPropertyId) ||
-                (propertyMode === 'new' && (!newPropertyForm.address.trim() || !newPropertyForm.city.trim() || !newPropertyForm.monthly_rent))
+                (propertyMode === 'new' && (!newPropertyForm.address.trim() || !newPropertyForm.city.trim() || !newPropertyForm.monthly_rent || !newPropertyForm.door_number.trim()))
               }
               className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md shadow-indigo-200 h-auto py-2 px-6 disabled:opacity-50"
             >
@@ -918,6 +1097,88 @@ export default function LandlordDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Backfill modal — shown after creating a tenant with a past lease_start */}
+      <Dialog open={isBackfillOpen} onOpenChange={open => { if (!open) { setIsBackfillOpen(false); toast.success('Inquilino añadido correctamente.') } }}>
+        <DialogContent className="max-w-lg w-full p-0 overflow-hidden rounded-2xl gap-0 border-slate-200 shadow-2xl">
+          <DialogHeader className="p-6 pb-4 border-b border-slate-100 bg-white">
+            <DialogTitle className="text-xl font-bold text-slate-800">¿Qué pasó con los meses anteriores?</DialogTitle>
+            <DialogDescription className="text-xs text-slate-500 mt-1">
+              El contrato comienza antes de este mes. Puedes registrar el estado de cada período o simplemente omitirlo.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="p-6 bg-slate-50 space-y-3 max-h-[60vh] overflow-y-auto">
+            {backfillMonths.map((m, i) => (
+              <div key={`${m.period_year}-${m.period_month}`} className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-bold text-slate-800 capitalize">{m.label}</p>
+                  <div className="flex gap-1">
+                    {(['paid', 'pending', 'overdue'] as const).map(s => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => setBackfillMonths(prev => prev.map((x, j) => j === i ? { ...x, status: s } : x))}
+                        className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase transition-colors ${
+                          m.status === s
+                            ? s === 'paid' ? 'bg-green-100 text-green-700' : s === 'overdue' ? 'bg-red-100 text-red-700' : 'bg-slate-200 text-slate-700'
+                            : 'bg-white text-slate-400 border border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        {s === 'paid' ? 'Pagado' : s === 'overdue' ? 'Vencido' : 'Pendiente'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {m.status === 'paid' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha de pago</label>
+                      <Input
+                        type="date"
+                        value={m.paid_date}
+                        onChange={e => setBackfillMonths(prev => prev.map((x, j) => j === i ? { ...x, paid_date: e.target.value } : x))}
+                        className="bg-slate-50 border-slate-200 rounded-lg text-xs h-8"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Comprobante (opcional)</label>
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-500 p-2 border border-dashed border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
+                        <UploadCloud className="w-3.5 h-3.5" />
+                        {m.receipt_file ? m.receipt_file.name : 'Adjuntar archivo'}
+                        <input
+                          type="file"
+                          accept="image/*,application/pdf"
+                          className="hidden"
+                          onChange={e => {
+                            const file = e.target.files?.[0] || null
+                            setBackfillMonths(prev => prev.map((x, j) => j === i ? { ...x, receipt_file: file } : x))
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="p-6 pt-4 bg-white border-t border-slate-100 flex gap-3 sm:justify-end">
+            <Button
+              variant="outline"
+              onClick={() => { setIsBackfillOpen(false); toast.success('Inquilino añadido correctamente.') }}
+              className="rounded-xl font-bold text-xs h-auto py-2 px-4 border-slate-200 text-slate-600"
+            >
+              Omitir
+            </Button>
+            <Button
+              onClick={handleBackfillSubmit}
+              disabled={backfillLoading}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md shadow-indigo-200 h-auto py-2 px-6"
+            >
+              {backfillLoading ? 'Registrando...' : 'Registrar meses'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -925,16 +1186,18 @@ export default function LandlordDashboard() {
 // ── History list sub-component ─────────────────────────────────────────────
 
 function HistoryList({ tenantId, historyMonths }: { tenantId: string; historyMonths: number }) {
+  const allHistory = historyMonths === 0
   const { data } = useQuery<TenantDetail>({
-    queryKey: ['tenant', tenantId],
+    queryKey: ['tenant', tenantId, allHistory ? 'all' : historyMonths],
     queryFn: async () => {
-      const res = await api.get(`/api/tenants/${tenantId}`)
+      const url = allHistory ? `/api/tenants/${tenantId}?history=all` : `/api/tenants/${tenantId}`
+      const res = await api.get(url)
       return res.data
     },
     staleTime: 5 * 60_000
   })
 
-  const history = data?.payment_history?.slice(0, historyMonths) ?? []
+  const history = allHistory ? (data?.payment_history ?? []) : (data?.payment_history?.slice(0, historyMonths) ?? [])
 
   if (history.length === 0) {
     return <div className="text-center py-4 text-xs font-medium text-slate-500">No hay pagos registrados.</div>

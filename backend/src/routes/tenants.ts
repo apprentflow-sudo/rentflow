@@ -38,7 +38,8 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
   res.json(enriched)
 })
 
-// GET /api/tenants/:id — single tenant with full data, property, 12-month history
+// GET /api/tenants/:id — single tenant with full data, property, payment history
+// ?history=all → returns every payment from lease start; default → last 12 months
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   const { data: tenant, error } = await supabaseAdmin
     .from('tenants')
@@ -52,18 +53,23 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     return
   }
 
-  const now = new Date()
-  const sinceYear = now.getFullYear() - 1
-  const sinceMonth = now.getMonth() + 1
-
-  const { data: payments } = await supabaseAdmin
+  let paymentsQuery = supabaseAdmin
     .from('payments')
     .select('*')
     .eq('tenant_id', tenant.id)
-    .or(`period_year.gt.${sinceYear},and(period_year.eq.${sinceYear},period_month.gte.${sinceMonth})`)
     .order('period_year', { ascending: false })
     .order('period_month', { ascending: false })
-    .limit(12)
+
+  if (req.query.history !== 'all') {
+    const now = new Date()
+    const sinceYear = now.getFullYear() - 1
+    const sinceMonth = now.getMonth() + 1
+    paymentsQuery = paymentsQuery
+      .or(`period_year.gt.${sinceYear},and(period_year.eq.${sinceYear},period_month.gte.${sinceMonth})`)
+      .limit(12)
+  }
+
+  const { data: payments } = await paymentsQuery
 
   const onTime = (payments || []).filter(p => p.status === 'paid' && p.paid_date && p.paid_date <= p.due_date).length
   const late = (payments || []).filter(p => p.status === 'paid' && p.paid_date && p.paid_date > p.due_date).length
@@ -77,7 +83,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 
 // POST /api/tenants — create tenant and generate current month payment
 router.post('/', async (req: Request, res: Response): Promise<void> => {
-  const { full_name, id_document, email, phone_whatsapp, property_id, preferred_language, lease_start, lease_end, notes } = req.body
+  const { full_name, id_document, email, phone_whatsapp, property_id, preferred_language, lease_start, lease_end, notes, rent_override, common_expenses_override } = req.body
 
   if (!full_name?.trim() || !id_document?.trim() || !property_id || !lease_start) {
     res.status(400).json({ error: 'full_name, id_document, property_id, and lease_start are required', code: 400 })
@@ -109,7 +115,9 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       preferred_language: preferred_language || 'es',
       lease_start,
       lease_end: lease_end || null,
-      notes: notes?.trim()
+      notes: notes?.trim(),
+      rent_override: rent_override != null ? Number(rent_override) : null,
+      common_expenses_override: common_expenses_override != null ? Number(common_expenses_override) : null
     })
     .select()
     .single()
@@ -132,7 +140,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
 // PATCH /api/tenants/:id — partial update
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
-  const allowed = ['full_name', 'email', 'phone_whatsapp', 'preferred_language', 'lease_start', 'lease_end', 'notes', 'property_id']
+  const allowed = ['full_name', 'email', 'phone_whatsapp', 'preferred_language', 'lease_start', 'lease_end', 'notes', 'property_id', 'rent_override', 'common_expenses_override']
   const updates: Record<string, unknown> = {}
   for (const key of allowed) {
     if (req.body[key] !== undefined) updates[key] = req.body[key]
@@ -175,6 +183,79 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
   }
 
   res.json({ success: true, id: data.id })
+})
+
+// POST /api/tenants/:id/backfill — create historical payments for past months
+router.post('/:id/backfill', async (req: Request, res: Response): Promise<void> => {
+  const { months } = req.body as {
+    months: Array<{
+      period_month: number
+      period_year: number
+      status: 'paid' | 'pending' | 'overdue'
+      paid_date?: string
+      receipt_url?: string
+    }>
+  }
+
+  if (!Array.isArray(months) || months.length === 0) {
+    res.status(400).json({ error: 'months array is required', code: 400 })
+    return
+  }
+
+  // Verify tenant belongs to this owner and get property/rent info
+  const { data: tenant } = await supabaseAdmin
+    .from('tenants')
+    .select('id, owner_id, property_id, rent_override, common_expenses_override, property:properties(monthly_rent, due_day, common_expenses)')
+    .eq('id', req.params.id)
+    .eq('owner_id', req.ownerId!)
+    .single()
+
+  if (!tenant) {
+    res.status(404).json({ error: 'Tenant not found', code: 404 })
+    return
+  }
+
+  const property = (tenant.property as unknown as { monthly_rent: number; due_day: number; common_expenses: number } | null)
+  const amountExpected = tenant.rent_override ?? property?.monthly_rent ?? 0
+  const commonExpected = tenant.common_expenses_override ?? property?.common_expenses ?? 0
+
+  let created = 0
+  let skipped = 0
+
+  for (const m of months) {
+    const { data: existing } = await supabaseAdmin
+      .from('payments')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .eq('period_month', m.period_month)
+      .eq('period_year', m.period_year)
+      .maybeSingle()
+
+    if (existing) { skipped++; continue }
+
+    const daysInMonth = new Date(m.period_year, m.period_month, 0).getDate()
+    const dueDay = Math.min(property?.due_day ?? 1, daysInMonth)
+    const dueDate = `${m.period_year}-${String(m.period_month).padStart(2, '0')}-${String(dueDay).padStart(2, '0')}`
+
+    const { error } = await supabaseAdmin.from('payments').insert({
+      owner_id: req.ownerId!,
+      property_id: tenant.property_id,
+      tenant_id: tenant.id,
+      period_month: m.period_month,
+      period_year: m.period_year,
+      amount_expected: amountExpected,
+      common_expenses_expected: commonExpected,
+      due_date: dueDate,
+      status: m.status,
+      paid_date: m.paid_date || null,
+      receipt_url: m.receipt_url || null,
+      ...(m.status === 'paid' ? { verified_by: 'owner' as const } : {})
+    })
+
+    if (!error) created++
+  }
+
+  res.json({ created, skipped })
 })
 
 // POST /api/tenants/:id/contract — upload PDF to Supabase Storage

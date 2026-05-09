@@ -10,7 +10,7 @@ export async function createMonthlyPayments(
 
   const { data: properties, error: propError } = await supabaseAdmin
     .from('properties')
-    .select('id, monthly_rent, due_day, currency')
+    .select('id, monthly_rent, due_day, currency, common_expenses')
     .eq('owner_id', ownerId)
     .eq('is_active', true)
 
@@ -19,7 +19,7 @@ export async function createMonthlyPayments(
   for (const property of properties) {
     const { data: tenants } = await supabaseAdmin
       .from('tenants')
-      .select('id')
+      .select('id, rent_override, common_expenses_override')
       .eq('property_id', property.id)
       .eq('is_active', true)
 
@@ -45,6 +45,9 @@ export async function createMonthlyPayments(
       const dueDay = Math.min(property.due_day, daysInMonth)
       const dueDate = `${year}-${String(month).padStart(2, '0')}-${String(dueDay).padStart(2, '0')}`
 
+      const amountExpected = tenant.rent_override ?? property.monthly_rent
+      const commonExpected = tenant.common_expenses_override ?? property.common_expenses ?? 0
+
       const { error: insertError } = await supabaseAdmin
         .from('payments')
         .insert({
@@ -53,7 +56,8 @@ export async function createMonthlyPayments(
           tenant_id: tenant.id,
           period_month: month,
           period_year: year,
-          amount_expected: property.monthly_rent,
+          amount_expected: amountExpected,
+          common_expenses_expected: commonExpected,
           due_date: dueDate,
           status: 'pending'
         })

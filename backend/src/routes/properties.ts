@@ -80,10 +80,14 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 
 // POST /api/properties — create property
 router.post('/', async (req: Request, res: Response): Promise<void> => {
-  const { address, city, postal_code, country, monthly_rent, currency, due_day, notes } = req.body
+  const { address, city, postal_code, door_number, country, monthly_rent, currency, common_expenses, due_day, notes } = req.body
 
   if (!address?.trim() || !city?.trim()) {
     res.status(400).json({ error: 'address and city are required', code: 400 })
+    return
+  }
+  if (!door_number?.trim()) {
+    res.status(400).json({ error: 'door_number is required', code: 400 })
     return
   }
   if (!monthly_rent || Number(monthly_rent) <= 0) {
@@ -102,9 +106,11 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       address: address.trim(),
       city: city.trim(),
       postal_code: postal_code?.trim(),
+      door_number: door_number.trim(),
       country: country || 'ES',
       monthly_rent: Number(monthly_rent),
       currency: currency || 'EUR',
+      common_expenses: Number(common_expenses) || 0,
       due_day: Number(due_day) || 1,
       notes: notes?.trim()
     })
@@ -121,7 +127,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
 // PATCH /api/properties/:id — partial update
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
-  const allowed = ['address', 'city', 'postal_code', 'country', 'monthly_rent', 'currency', 'due_day', 'notes']
+  const allowed = ['address', 'city', 'postal_code', 'door_number', 'country', 'monthly_rent', 'currency', 'common_expenses', 'due_day', 'notes']
   const updates: Record<string, unknown> = {}
   for (const key of allowed) {
     if (req.body[key] !== undefined) updates[key] = req.body[key]
