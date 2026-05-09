@@ -75,6 +75,7 @@ interface Property {
   city: string
   monthly_rent: number
   due_day: number
+  currency: string
   active_tenants_count: number
 }
 
@@ -424,6 +425,7 @@ export default function LandlordDashboard() {
       })
 
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['tenant', backfillTenantId], exact: false })
       toast.success('Inquilino añadido con historial registrado.')
     } catch {
       toast.error('Error al registrar meses anteriores. Puedes intentarlo más tarde.')
@@ -700,7 +702,7 @@ export default function LandlordDashboard() {
           <DialogHeader className="p-6 pb-4 border-b border-slate-100 bg-white">
             <DialogTitle className="text-xl font-bold text-slate-800">Añadir Inquilino</DialogTitle>
             <DialogDescription className="text-xs text-slate-500 mt-1">
-              El inquilino podrá acceder al portal usando su DNI/NIE.
+              El inquilino podrá acceder al portal usando su número de identificación.
             </DialogDescription>
           </DialogHeader>
 
@@ -720,13 +722,14 @@ export default function LandlordDashboard() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">DNI / NIE *</label>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Número de identificación *</label>
                   <Input
                     value={tenantForm.id_document}
                     onChange={e => setTenantForm(f => ({ ...f, id_document: e.target.value }))}
                     placeholder="12345678A"
                     className="bg-white border-slate-200 rounded-lg text-sm h-9"
                   />
+                  <p className="text-[10px] text-slate-400 mt-1">El inquilino usará este número para acceder al portal de pagos.</p>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1">Teléfono (WhatsApp)</label>
@@ -848,7 +851,19 @@ export default function LandlordDashboard() {
                     </div>
                     {selectedPropertyId && (
                       <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-2">
-                        <p className="text-[10px] font-bold uppercase text-slate-400 mb-2">Ajustar para este inquilino</p>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-[10px] font-bold uppercase text-slate-400">Ajustar para este inquilino</p>
+                          {(() => {
+                            const sel = propertiesList.find(p => p.id === selectedPropertyId)
+                            if (!sel?.currency) return null
+                            const label: Record<string, string> = { EUR: 'EUR €', USD: 'USD $', UYU: 'UYU $U', PYG: 'PYG ₲', GBP: 'GBP £' }
+                            return (
+                              <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+                                {label[sel.currency] || sel.currency}
+                              </span>
+                            )
+                          })()}
+                        </div>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="block text-xs font-semibold text-slate-600 mb-1">Renta mensual</label>
@@ -1132,7 +1147,7 @@ export default function LandlordDashboard() {
                 {m.status === 'paid' && (
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha de pago</label>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha de pago <span className="font-normal text-slate-400">(opcional)</span></label>
                       <Input
                         type="date"
                         value={m.paid_date}

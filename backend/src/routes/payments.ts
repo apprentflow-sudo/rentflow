@@ -10,7 +10,7 @@ const router = Router()
 
 // ─── TENANT ROUTES (public, JWT auth) ───────────────────────────────────────
 
-// GET /api/payments/tenant/:tenant_id — current payment + 6-month history
+// GET /api/payments/tenant/:tenant_id — all pending/overdue payments + 6-month history
 router.get('/tenant/:tenant_id', requireTenant, async (req: Request, res: Response): Promise<void> => {
   // Tenant can only access their own data
   if (req.params.tenant_id !== req.tenantId) {
@@ -18,24 +18,23 @@ router.get('/tenant/:tenant_id', requireTenant, async (req: Request, res: Respon
     return
   }
 
-  const { month, year } = getCurrentMonthYear()
-
-  const [{ data: current }, { data: history }] = await Promise.all([
+  const [{ data: pending }, { data: history }] = await Promise.all([
+    // All unpaid months, oldest first so the oldest debt is at index 0
     supabaseAdmin.from('payments')
-      .select('*, property:properties(address, city, monthly_rent, due_day)')
+      .select('*, property:properties(address, city, monthly_rent, due_day, currency)')
       .eq('tenant_id', req.tenantId!)
-      .eq('period_month', month)
-      .eq('period_year', year)
-      .maybeSingle(),
+      .in('status', ['pending', 'overdue'])
+      .order('period_year', { ascending: true })
+      .order('period_month', { ascending: true }),
     supabaseAdmin.from('payments')
-      .select('id, status, amount_expected, amount_received, period_month, period_year, due_date, paid_date, payment_method, receipt_pdf_url')
+      .select('id, status, amount_expected, amount_received, common_expenses_expected, period_month, period_year, due_date, paid_date, payment_method, receipt_pdf_url')
       .eq('tenant_id', req.tenantId!)
       .order('period_year', { ascending: false })
       .order('period_month', { ascending: false })
       .limit(6)
   ])
 
-  res.json({ current_payment: current, history: history || [] })
+  res.json({ pending_payments: pending || [], history: history || [] })
 })
 
 // POST /api/payments/:payment_id/receipt — tenant uploads proof of payment
@@ -80,12 +79,14 @@ router.post('/:payment_id/receipt', requireTenant, uploadReceipt.single('receipt
     return
   }
 
+  const receiptType = (req.body?.receipt_type as string) || 'both'
+
   await supabaseAdmin
     .from('payments')
     .update({
       receipt_url: path,
       status: 'to_verify',
-      receipt_data: null,
+      receipt_data: { receipt_type: receiptType } as Record<string, unknown>,
       verification_note: null,
       verified_by: null
     })
