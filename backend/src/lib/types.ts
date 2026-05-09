@@ -42,6 +42,7 @@ export interface Tenant {
   lease_end?: string
   rent_override?: number
   common_expenses_override?: number
+  currency_override?: string
   contract_url?: string
   is_active: boolean
   notes?: string

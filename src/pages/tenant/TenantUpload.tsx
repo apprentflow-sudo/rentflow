@@ -53,7 +53,9 @@ export default function TenantUpload() {
       return res.data as { pending_payments: TenantPayment[]; history: TenantPayment[] }
     },
     enabled: !!tenantId,
-    retry: false
+    retry: false,
+    staleTime: 0,
+    refetchOnMount: true
   })
 
   if (isLoading) {
@@ -202,7 +204,7 @@ export default function TenantUpload() {
                           <tr className="bg-slate-50 text-slate-400 text-[10px] uppercase tracking-wider">
                             <th className="text-left p-2.5 font-semibold">Período</th>
                             <th className="text-right p-2.5 font-semibold">Alquiler</th>
-                            {hasCommonExpenses && <th className="text-right p-2.5 font-semibold">Gastos</th>}
+                            {hasCommonExpenses && <th className="text-right p-2.5 font-semibold">Gastos comunes</th>}
                             <th className="text-right p-2.5 font-semibold">Total</th>
                           </tr>
                         </thead>
@@ -257,7 +259,7 @@ export default function TenantUpload() {
                 <h3 className="text-sm font-bold text-slate-800 mb-3">¿Qué cubre este comprobante?</h3>
                 <div className="flex gap-2">
                   {([
-                    { value: 'both', label: 'Alquiler + Gastos' },
+                    { value: 'both', label: 'Alquiler + Gastos comunes' },
                     { value: 'rent', label: 'Solo alquiler' },
                     { value: 'common', label: 'Solo gastos' },
                   ] as { value: ReceiptType; label: string }[]).map(opt => (

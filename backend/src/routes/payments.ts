@@ -136,6 +136,9 @@ router.get('/dashboard', requireOwner, async (req: Request, res: Response): Prom
   const totalReceived = list.filter(p => p.status === 'paid').reduce((sum, p) => sum + Number(p.amount_received || p.amount_expected), 0)
 
   const propertyIds = new Set(list.map(p => p.property_id)).size
+  const today = new Date().toISOString().split('T')[0]
+  const isEffectivelyOverdue = (p: { status: string; due_date: string }) =>
+    p.status === 'overdue' || (p.status === 'pending' && p.due_date < today)
 
   res.json({
     current_month: formatMonthName(month, year),
@@ -144,8 +147,8 @@ router.get('/dashboard', requireOwner, async (req: Request, res: Response): Prom
       total_expected: totalExpected,
       total_received: totalReceived,
       paid_count: list.filter(p => p.status === 'paid').length,
-      pending_count: list.filter(p => p.status === 'pending').length,
-      overdue_count: list.filter(p => p.status === 'overdue').length,
+      pending_count: list.filter(p => p.status === 'pending' && !isEffectivelyOverdue(p)).length,
+      overdue_count: list.filter(isEffectivelyOverdue).length,
       to_verify_count: list.filter(p => p.status === 'to_verify').length,
       partial_count: list.filter(p => p.status === 'partial').length
     },

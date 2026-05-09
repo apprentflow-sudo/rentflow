@@ -83,7 +83,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 
 // POST /api/tenants — create tenant and generate current month payment
 router.post('/', async (req: Request, res: Response): Promise<void> => {
-  const { full_name, id_document, email, phone_whatsapp, property_id, preferred_language, lease_start, lease_end, notes, rent_override, common_expenses_override } = req.body
+  const { full_name, id_document, email, phone_whatsapp, property_id, preferred_language, lease_start, lease_end, notes, rent_override, common_expenses_override, currency_override } = req.body
 
   if (!full_name?.trim() || !id_document?.trim() || !property_id || !lease_start) {
     res.status(400).json({ error: 'full_name, id_document, property_id, and lease_start are required', code: 400 })
@@ -117,7 +117,8 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       lease_end: lease_end || null,
       notes: notes?.trim(),
       rent_override: rent_override != null ? Number(rent_override) : null,
-      common_expenses_override: common_expenses_override != null ? Number(common_expenses_override) : null
+      common_expenses_override: common_expenses_override != null ? Number(common_expenses_override) : null,
+      currency_override: currency_override || null
     })
     .select()
     .single()
@@ -140,7 +141,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
 // PATCH /api/tenants/:id — partial update
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
-  const allowed = ['full_name', 'email', 'phone_whatsapp', 'preferred_language', 'lease_start', 'lease_end', 'notes', 'property_id', 'rent_override', 'common_expenses_override']
+  const allowed = ['full_name', 'email', 'phone_whatsapp', 'preferred_language', 'lease_start', 'lease_end', 'notes', 'property_id', 'rent_override', 'common_expenses_override', 'currency_override']
   const updates: Record<string, unknown> = {}
   for (const key of allowed) {
     if (req.body[key] !== undefined) updates[key] = req.body[key]

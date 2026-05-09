@@ -251,6 +251,7 @@ export default function LandlordDashboard() {
   })
   const [existingRentOverride, setExistingRentOverride] = useState('')
   const [existingCommonOverride, setExistingCommonOverride] = useState('')
+  const [existingCurrencyOverride, setExistingCurrencyOverride] = useState('')
 
   // Backfill modal state (shown after creating a tenant with a past lease_start)
   const [backfillTenantId, setBackfillTenantId] = useState<string | null>(null)
@@ -312,6 +313,7 @@ export default function LandlordDashboard() {
     setNewPropertyForm({ address: '', city: '', door_number: '', postal_code: '', monthly_rent: '', common_expenses: '0', currency: 'EUR', due_day: '1' })
     setExistingRentOverride('')
     setExistingCommonOverride('')
+    setExistingCurrencyOverride('')
     setPropertyMode('existing')
     setSelectedPropertyId('')
   }
@@ -349,6 +351,7 @@ export default function LandlordDashboard() {
         property_id: propertyId,
         rent_override: existingRentOverride ? Number(existingRentOverride) : undefined,
         common_expenses_override: existingCommonOverride ? Number(existingCommonOverride) : undefined,
+        currency_override: existingCurrencyOverride || undefined,
       })
       return { tenantId: res.data.id, leaseStart: tenantForm.lease_start }
     },
@@ -441,6 +444,14 @@ export default function LandlordDashboard() {
 
   const payments = data?.payments ?? []
   const stats = data?.stats
+
+  const todayStr = new Date().toISOString().split('T')[0]
+  const effectiveOverdueCount = payments.filter(
+    p => p.status === 'overdue' || (p.status === 'pending' && p.due_date < todayStr)
+  ).length
+  const effectivePendingCount = payments.filter(
+    p => p.status === 'pending' && p.due_date >= todayStr
+  ).length
 
   // Always derive from live query so modal shows fresh AI data after refetch
   const selectedPaymentLive = selectedPayment
@@ -544,12 +555,12 @@ export default function LandlordDashboard() {
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
             <p className="text-xs font-semibold text-amber-500 uppercase tracking-widest mb-1">Por verificar</p>
             <p className="text-2xl font-bold text-slate-900">{stats?.to_verify_count ?? 0}</p>
-            <p className="text-[10px] text-amber-500 font-medium tracking-wide">{stats?.pending_count ?? 0} pendientes</p>
+            <p className="text-[10px] text-amber-500 font-medium tracking-wide">{effectivePendingCount} pendientes</p>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
             <p className="text-xs font-semibold text-red-500 uppercase tracking-widest mb-1">Vencido</p>
-            <p className="text-2xl font-bold text-slate-900">{stats?.overdue_count ?? 0}</p>
+            <p className="text-2xl font-bold text-slate-900">{effectiveOverdueCount}</p>
             <p className="text-[10px] text-red-500 font-medium tracking-wide">Revisión urgente</p>
           </div>
         </div>
@@ -828,6 +839,7 @@ export default function LandlordDashboard() {
                             setSelectedPropertyId(p.id)
                             setExistingRentOverride(String(p.monthly_rent))
                             setExistingCommonOverride('0')
+                            setExistingCurrencyOverride('')
                           }}
                           className={`w-full flex items-center justify-between p-3 rounded-xl border text-left transition-colors ${
                             selectedPropertyId === p.id
@@ -850,20 +862,8 @@ export default function LandlordDashboard() {
                       ))}
                     </div>
                     {selectedPropertyId && (
-                      <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-2">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-[10px] font-bold uppercase text-slate-400">Ajustar para este inquilino</p>
-                          {(() => {
-                            const sel = propertiesList.find(p => p.id === selectedPropertyId)
-                            if (!sel?.currency) return null
-                            const label: Record<string, string> = { EUR: 'EUR €', USD: 'USD $', UYU: 'UYU $U', PYG: 'PYG ₲', GBP: 'GBP £' }
-                            return (
-                              <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
-                                {label[sel.currency] || sel.currency}
-                              </span>
-                            )
-                          })()}
-                        </div>
+                      <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-3">
+                        <p className="text-[10px] font-bold uppercase text-slate-400">Ajustar para este inquilino</p>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="block text-xs font-semibold text-slate-600 mb-1">Renta mensual</label>
@@ -883,6 +883,21 @@ export default function LandlordDashboard() {
                               placeholder="0"
                               className="bg-slate-50 border-slate-200 rounded-lg text-sm h-9"
                             />
+                          </div>
+                          <div className="col-span-2">
+                            <label className="block text-xs font-semibold text-slate-600 mb-1">Moneda de pago</label>
+                            <select
+                              value={existingCurrencyOverride}
+                              onChange={e => setExistingCurrencyOverride(e.target.value)}
+                              className="w-full bg-slate-50 border border-slate-200 rounded-lg text-sm h-9 px-2 outline-none focus:ring-1 focus:ring-indigo-400"
+                            >
+                              <option value="">Misma que la propiedad ({propertiesList.find(p => p.id === selectedPropertyId)?.currency || 'EUR'})</option>
+                              <option value="EUR">EUR €</option>
+                              <option value="USD">USD $</option>
+                              <option value="UYU">UYU $U</option>
+                              <option value="PYG">PYG ₲</option>
+                              <option value="GBP">GBP £</option>
+                            </select>
                           </div>
                         </div>
                         <p className="text-[10px] text-slate-400">Solo afecta a este inquilino. La propiedad no se modifica.</p>
