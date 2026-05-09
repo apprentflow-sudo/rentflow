@@ -1,11 +1,26 @@
 import { createContext, useContext, useState, useEffect } from 'react'
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { tenantApi } from '@/lib/api'
 
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-)
+// Supabase client is created lazily inside the provider so that a missing env
+// var throws during React's render phase (catchable by ErrorBoundary), not at
+// module evaluation time (which produces a silent blank page in production).
+let _supabase: SupabaseClient | null = null
+
+function getSupabase(): SupabaseClient {
+  if (_supabase) return _supabase
+  const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+  if (!url || !key) {
+    throw new Error(
+      `Missing Supabase env vars — check Vercel settings.\n` +
+      `VITE_SUPABASE_URL: ${url ? 'set' : 'MISSING'}\n` +
+      `VITE_SUPABASE_ANON_KEY: ${key ? 'set' : 'MISSING'}`
+    )
+  }
+  _supabase = createClient(url, key)
+  return _supabase
+}
 
 interface AuthContextType {
   ownerToken: string | null
@@ -20,6 +35,8 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const supabase = getSupabase() // throws here → caught by ErrorBoundary
+
   const [ownerToken, setOwnerToken] = useState<string | null>(
     () => localStorage.getItem('owner_token')
   )
@@ -29,7 +46,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isOwnerLoading, setIsOwnerLoading] = useState(true)
 
   useEffect(() => {
-    // Restore session from Supabase on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.access_token) {
         setOwnerToken(session.access_token)
@@ -41,7 +57,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsOwnerLoading(false)
     })
 
-    // Keep token fresh when Supabase refreshes the session
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.access_token) {
         setOwnerToken(session.access_token)
@@ -53,7 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
 
     return () => subscription.unsubscribe()
-  }, [])
+  }, [supabase])
 
   const signInOwner = async (email: string, password: string) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
