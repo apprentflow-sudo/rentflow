@@ -166,7 +166,19 @@ export default function TenantUpload() {
                     <div className={`text-2xl font-black underline decoration-4 ${isOverdue ? 'text-red-900 decoration-red-200' : 'text-indigo-900 decoration-indigo-200'}`}>
                       {currencySymbol}{grandTotal.toLocaleString('es-ES')}
                     </div>
-                    <div className={`text-[10px] mt-1 ${isOverdue ? 'text-red-500' : 'text-indigo-500'}`}>
+                    {hasCommonExpenses && (
+                      <div className={`mt-2 flex flex-col gap-0.5 text-[10px] ${isOverdue ? 'text-red-600' : 'text-indigo-600'}`}>
+                        <div className="flex justify-between">
+                          <span>Alquiler</span>
+                          <span>{currencySymbol}{pendingPayments.reduce((s, p) => s + Number(p.amount_expected), 0).toLocaleString('es-ES')}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Gastos comunes</span>
+                          <span>{currencySymbol}{pendingPayments.reduce((s, p) => s + Number(p.common_expenses_expected || 0), 0).toLocaleString('es-ES')}</span>
+                        </div>
+                      </div>
+                    )}
+                    <div className={`text-[10px] mt-2 ${isOverdue ? 'text-red-500' : 'text-indigo-500'}`}>
                       Vencimiento: {new Date(oldestPending.due_date).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}
                     </div>
 
